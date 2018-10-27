@@ -1,0 +1,170 @@
+---
+title: "Final.MachineLanguage Project"
+author: "Manish Gyawali"
+date: "October 21, 2018"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+I used a random forest algorithm to train the data. First, upon noticing a large number of NAs, I decided to test using only complete cases. So I loaded the original dataset and obtained training and testing files only containing complete cases 
+
+```{r datasets, include = FALSE, echo = TRUE}
+
+# STEP 1 Read in the data
+
+testing <- read.csv("E:/Coursera/Machine_Learning/Final.Project/pml-testing.csv")
+training <- read.csv("E:/Coursera/Machine_Learning/Final.Project/pml-training.csv")
+
+```
+
+```{r packages, message = FALSE, echo = TRUE}
+# STEP 2  Attach required packages
+
+library(caret)
+library(MASS)
+library(dplyr)
+
+```
+
+```{r NAs,  echo = TRUE}
+# STEP 3 Find which training set variables have no NAs
+
+dim(testing);dim(training)
+sap1 <- sapply(1:length(training), function(x) { length(which(is.na(training[,c(x)]) == TRUE))})
+
+cbind(names(training), sap1) %>% head()
+
+classe <- training$classe
+```
+
+
+```{r variable_classes, echo = TRUE}
+
+# STEP 4 Divide variables into classes 
+
+factors<- training[which(sapply(training, is.factor) == TRUE)]
+integers <- training[which(sapply(training, is.integer) == TRUE)]
+numerics <- training[which(sapply(training, is.numeric) == TRUE)]
+
+numerics_not_integers <- training[which(sapply(training, function(x) { 
+  is.numeric(x) && !is.integer(x) 
+  }) == TRUE)]
+
+print(paste0("The number of factors are ", dim(factors)[2]));
+print(paste0(" The number of integers are ", dim(integers)[2]));
+print(paste0(" The number of numerics are ", dim(numerics)[2])); 
+print(paste0(" The number of numerics which are not integers are ", dim(numerics_not_integers)[2]));
+```
+
+```{r remove_NAs, echo = TRUE}
+
+
+# STEP 5 Removing all columns with too many NAs
+# Remove also the first seven variables as they are only accounting variables 
+
+x1 <- sapply(1:length(training), function(x) {
+  sapply(training[,c(x)], (is.na))
+  })
+x2 <- as.matrix(x1)
+x3 <- apply(x2, 2, as.numeric)
+x4 <- apply(x3, 2, sum) 
+reduced_dataset <- training[which(x4 == 0)]
+reduced_dataset <- reduced_dataset[-c(1:7)] #removing unimportant variables
+names(reduced_dataset) %>% length() # the variables that are in the reduced dataset
+
+```
+We have 85 predictor variables in the dataset, and also the 'classe' variable 
+
+Now we further try to reduce the dimensionality by using another technique
+```{r further_remove_NAs, warning = FALSE, echo = TRUE}
+
+#  STEP 6 Removing columns with too many NAs from the reduced dataset obtained from STEP 5
+#  Here use the fact that the variables have no mean to remove them 
+
+ na.reduced.means <- sapply(reduced_dataset, function(x) (is.na(mean(x))))
+ na.means <- reduced_dataset[names(which(na.reduced.means == FALSE))]
+ dim(na.means) #check how many dimensions we have now
+
+```
+
+We only have 52 predictor variables now from the orginal set. But even many of these variables may be redundant if there is high correlation amongst them. So our next technique for reducing dimensionality is to remove variables with high correlation. 
+
+```{r remove_correlated_predictors, echo = TRUE}
+
+# STEP 7 Remove highly correlated predictors from the dataset obtained in STEP 6 
+
+variables.correlation <-  cor(na.means)
+high_correlation <- findCorrelation(variables.correlation, cutoff=0.8)
+new.vars <- na.means[-(high_correlation)]
+new.vars <- cbind(new.vars, classe)
+dim(new.vars)  #check how many dimensions we have now
+```
+After removing variables with high correlation, we only have 40 predictor variables! 
+To reduce dimensionality even further, we rank features by importance using a feature of the "gbm" package. It's a simple fit that we can use to get the most important variables. Here we choose to have just 20 of the most important variables.  
+
+
+```{r gbm_train, echo = TRUE}
+
+# STEP 8 Use gbm package to train the model, then create a new dataset using the 20 most influential predictors
+
+library(gbm)
+fit_gbm = gbm(classe~., data=new.vars)
+imp.pred <- which(relative.influence(fit_gbm) != 0) 
+most.imp.pred <- names(sort(imp.pred)[1:20])
+most.imp.pred <- new.vars[most.imp.pred]
+vars.list <- cbind(most.imp.pred, classe)
+dim(vars.list)
+
+```
+We are now down to 20 predictors from 160! The 21st variable in the vars.list dataset is the classe variable that is our dependent variable. 
+
+Now that we have reduced dimensionality enough, we can create new training and validation samples from the dataset with the reduced dimensionality. 
+```{r create_data_partition, echo = TRUE}
+
+# STEP 9 Create data partion and create training, testing sets from the dataset from STEP 8.
+# We will train on the new training set generated 
+# Create control functions for later use. The controls are created using repeated cross-validation
+
+train_samp <- createDataPartition(y = vars.list$classe, p = 0.75, list = FALSE)
+train.1 <- vars.list[train_samp,]; validate.1 <- vars.list[-train_samp,]
+control_1 <- trainControl(method = "repeatedcv", number = 5, repeats = 3)
+control_2 <- trainControl(method = "repeatedcv", number = 10, repeats = 5)
+
+``` 
+
+Now we fit a 'random forest' model on the reduced dataset, and get the required results. 
+
+```{r fit_RF_model, echo = TRUE}
+#browser()
+# STEP 10 Using the new training data from STEP 9, train a simple model 
+# We train using caret's inbuilt random forest package
+
+
+modelFit_rf <- train(classe ~., data=train.1, trControl = control_1, 
+                  method = "rf",tuneLength=5)
+```
+
+```{r summary, echo = TRUE}
+# STEP 11 Summarize the final model, by checking the Confusion Matrix, etc
+
+modelFit_rf$finalModel
+```
+
+Overall, we notice that the model does quite well. The error rates for almost all the different classifications are quite small. But we need to look at the validation data to see if this is really the case. As we already created a validation dataset from the training dataset in STEP 9, we can use it. 
+
+```{r predict_on_model, echo = TRUE}
+#STEP 12: 
+#Predict on validation data set obtained from STEP 9, validate.1
+
+
+prediction <- predict(modelFit_rf, validate.1 )
+confusionMatrix(prediction, validate.1$classe)
+
+```
+
+Predicting using the validation set, we notice that ew have a high accuracy (97.7%). So overall, our algorithm has done quite well using only 20 predictor variables! 
+
+
